@@ -14,3 +14,10 @@ Inside data/oil_data is the information for oil spot prices and futures prices (
 
 Note, the 1 and 3 month options start 1983 and the 2 and 4 month options start 01-02-1985
 - All go until 2024-04-05
+
+-- 
+
+Data processing:
+- We have weather data over a long period, including trading and non-trading days
+- We made all future and spot price dataframes span the same time period and filtered out weather data for those days
+- This lives within the data/processed_data directory
