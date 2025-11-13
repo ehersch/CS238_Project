@@ -21,3 +21,5 @@ Data processing:
 - We have weather data over a long period, including trading and non-trading days
 - We made all future and spot price dataframes span the same time period and filtered out weather data for those days
 - This lives within the data/processed_data directory
+
+Question and further decision the processed datasets only have weather data on trading days. It could be worth incorporating non-trading day weather though.
