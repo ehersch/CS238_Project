@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+
 try:
     import gymnasium as gym
     from gymnasium import spaces
@@ -39,7 +40,10 @@ class WTIEnv(gym.Env):
     Actions: SHORT (0), FLAT (1), LONG (2)
     Reward: position * return - transaction_cost
     """
-    def __init__(self, df, feature_cols, return_col, window=20, cost=0.0005, normalize=True):
+
+    def __init__(
+        self, df, feature_cols, return_col, window=20, cost=0.0005, normalize=True
+    ):
         super().__init__()
 
         # Prepare data (handles NaN, normalizes)
@@ -83,6 +87,10 @@ class WTIEnv(gym.Env):
         cost = self.cost * abs(self.position - prev_pos)
 
         reward = pnl - cost
+
+        # self.t += 1
+        # done = self.t >= len(self.df)
+        # return self._get_obs(), reward, done, {}
 
         self.t += 1
         terminated = self.t >= len(self.df)
