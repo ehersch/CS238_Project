@@ -44,9 +44,16 @@ class WTIEnv(gym.Env):
 
         reward = pnl - cost
 
+        # self.t += 1
+        # done = self.t >= len(self.df)
+        # return self._get_obs(), reward, done, {}
+
         self.t += 1
-        done = self.t >= len(self.df)
-        return self._get_obs(), reward, done, {}
+
+        if self.t >= len(self.df):
+            return None, reward, True, {}
+
+        return self._get_obs(), reward, False, {}
 
     def _get_obs(self):
         window_data = self.df.iloc[self.t - self.window : self.t][self.feature_cols]
