@@ -41,8 +41,8 @@ class WTIPOMDPModel:
 
         # Models to be learned
         self.state_kmeans = None  # Clusters returns into market regimes
-        self.obs_kmeans = None    # Clusters weather into observation types
-        self.scaler = None        # Normalizes weather features
+        self.obs_kmeans = None  # Clusters weather into observation types
+        self.scaler = None  # Normalizes weather features
 
         # POMDP components (learned from data)
         self.T = None  # Transition matrix: T[s, a, s'] = P(s' | s, a)
@@ -159,7 +159,7 @@ class WTIPOMDPModel:
 
             # Reward for each action
             self.R[s, 0] = -1 * mean_return  # SHORT: profit when price drops
-            self.R[s, 1] = 0                  # FLAT: no exposure
+            self.R[s, 1] = 0  # FLAT: no exposure
             self.R[s, 2] = +1 * mean_return  # LONG: profit when price rises
 
     def fit(self, df, feature_cols, return_col):
@@ -254,7 +254,9 @@ class WTIPOMDPModel:
         """
         Select action that maximizes expected immediate reward.
         """
-        expected_rewards = [self.expected_reward(belief, a) for a in range(self.n_actions)]
+        expected_rewards = [
+            self.expected_reward(belief, a) for a in range(self.n_actions)
+        ]
         return np.argmax(expected_rewards)
 
     def _belief_to_key(self, belief, precision=2):
@@ -284,7 +286,16 @@ class WTIPOMDPModel:
         td_error = td_target - self.Q[belief_key][action]
         self.Q[belief_key][action] += alpha * td_error
 
-    def train_qlearning(self, df, feature_cols, return_col, n_episodes=100, alpha=0.1, epsilon_start=1.0, epsilon_end=0.1):
+    def train_qlearning(
+        self,
+        df,
+        feature_cols,
+        return_col,
+        n_episodes=100,
+        alpha=0.1,
+        epsilon_start=1.0,
+        epsilon_end=0.1,
+    ):
         """
         Train belief-based Q-learning policy.
         """
@@ -330,7 +341,9 @@ class WTIPOMDPModel:
 
             if (episode + 1) % 10 == 0:
                 avg_reward = np.mean(total_rewards[-10:])
-                print(f"Episode {episode + 1}/{n_episodes}, Avg Reward: {avg_reward:.4f}, Epsilon: {epsilon:.3f}")
+                print(
+                    f"Episode {episode + 1}/{n_episodes}, Avg Reward: {avg_reward:.4f}, Epsilon: {epsilon:.3f}"
+                )
 
         return total_rewards
 
@@ -363,7 +376,9 @@ class WTIPOMDPModel:
             transaction_cost = 0.0005 * abs(new_position - position)
             reward = pnl - transaction_cost
 
-            next_obs = self.get_observation(weather_data[t + 1]) if t + 1 < len(df) else obs
+            next_obs = (
+                self.get_observation(weather_data[t + 1]) if t + 1 < len(df) else obs
+            )
             belief = self.update_belief(belief, action, next_obs)
 
             position = new_position
@@ -372,11 +387,11 @@ class WTIPOMDPModel:
             rewards.append(reward)
 
         return {
-            'total_reward': total_reward,
-            'mean_reward': np.mean(rewards),
-            'positions': positions,
-            'rewards': rewards,
-            'sharpe': np.mean(rewards) / (np.std(rewards) + 1e-8) * np.sqrt(252)
+            "total_reward": total_reward,
+            "mean_reward": np.mean(rewards),
+            "positions": positions,
+            "rewards": rewards,
+            "sharpe": np.mean(rewards) / (np.std(rewards) + 1e-8) * np.sqrt(252),
         }
 
 
@@ -386,11 +401,13 @@ def run_pomdp_experiment():
     """
     # Load data with hurricanes
     print("Loading data...")
-    df = pd.read_csv('wti_1_data_with_hurricanes.csv')
+    df = pd.read_csv("wti_1_data_with_hurricanes.csv")
 
     # Define feature columns (all weather + hurricane features)
-    feature_cols = [c for c in df.columns if c not in ['Date', 'ret_CL1', 'spot_price', 'CL1']]
-    return_col = 'ret_CL1'
+    feature_cols = [
+        c for c in df.columns if c not in ["Date", "ret_CL1", "spot_price", "CL1"]
+    ]
+    return_col = "ret_CL1"
 
     print(f"Features: {len(feature_cols)}")
     print(f"Samples: {len(df)}")
@@ -408,7 +425,9 @@ def run_pomdp_experiment():
 
     # Train Q-learning
     print("\nTraining Q-learning...")
-    training_rewards = pomdp.train_qlearning(train_df, feature_cols, return_col, n_episodes=50)
+    training_rewards = pomdp.train_qlearning(
+        train_df, feature_cols, return_col, n_episodes=50
+    )
     print(f"Final training reward: {training_rewards[-1]:.4f}")
 
     # Evaluate on test set
@@ -440,5 +459,8 @@ def run_pomdp_experiment():
 
 if __name__ == "__main__":
     import os
-    os.chdir('/Users/andrewsung/Developer/CS238_Project/src')
+
+    os.chdir(
+        "/Users/ethanhersch/Documents/Documents/Stanford/CS238/FinalProject/CS238_Project/src"
+    )
     pomdp, results = run_pomdp_experiment()
