@@ -27,22 +27,28 @@ class WTIPOMDPModel:
     use weather observations to update beliefs and select actions.
     """
 
-    def __init__(self, n_hidden_states=4, n_obs_clusters=8, gamma=0.95):
+    def __init__(self, n_hidden_states=4, n_obs_clusters=8, gamma=0.95, discretization='kmeans'):
         """
         Args:
             n_hidden_states: Number of discrete market regimes
             n_obs_clusters: Number of discrete observation clusters for weather
             gamma: Discount factor
+            discretization: 'kmeans' or 'uniform'
         """
         self.n_states = n_hidden_states
         self.n_obs = n_obs_clusters
         self.n_actions = 3  # SHORT, FLAT, LONG
         self.gamma = gamma
+        self.discretization = discretization
 
         # Models to be learned
         self.state_kmeans = None  # Clusters returns into market regimes
         self.obs_kmeans = None  # Clusters weather into observation types
         self.scaler = None  # Normalizes weather features
+
+        # For uniform discretization
+        self.return_bins = None
+        self.obs_bins = None
 
         # POMDP components (learned from data)
         self.T = None  # Transition matrix: T[s, a, s'] = P(s' | s, a)
@@ -54,13 +60,16 @@ class WTIPOMDPModel:
 
     def _discretize_states(self, returns):
         """
-        Discretize continuous returns into market regimes using K-means.
+        Discretize continuous returns into market regimes.
+        """
+        if self.discretization == 'uniform':
+            return self._discretize_states_uniform(returns)
+        else:
+            return self._discretize_states_kmeans(returns)
 
-        Regimes roughly correspond to:
-        - Strong bull (high positive returns)
-        - Mild bull (small positive returns)
-        - Mild bear (small negative returns)
-        - Strong bear (high negative returns)
+    def _discretize_states_kmeans(self, returns):
+        """
+        Discretize using K-means clustering.
         """
         returns_2d = returns.reshape(-1, 1)
         self.state_kmeans = KMeans(n_clusters=self.n_states, random_state=42, n_init=10)
@@ -74,15 +83,71 @@ class WTIPOMDPModel:
 
         return states
 
+    def _discretize_states_uniform(self, returns):
+        """
+        Discretize returns using uniform percentile bins.
+        """
+        # Create uniform bins based on percentiles
+        percentiles = np.linspace(0, 100, self.n_states + 1)
+        self.return_bins = np.percentile(returns, percentiles)
+        self.return_bins[0] = -np.inf
+        self.return_bins[-1] = np.inf
+
+        states = np.digitize(returns, self.return_bins[1:-1])
+        return states
+
     def _discretize_observations(self, weather_data):
         """
         Discretize continuous weather features into observation clusters.
+        """
+        if self.discretization == 'uniform':
+            return self._discretize_observations_uniform(weather_data)
+        else:
+            return self._discretize_observations_kmeans(weather_data)
+
+    def _discretize_observations_kmeans(self, weather_data):
+        """
+        Discretize using K-means clustering.
         """
         self.scaler = StandardScaler()
         weather_normalized = self.scaler.fit_transform(weather_data)
 
         self.obs_kmeans = KMeans(n_clusters=self.n_obs, random_state=42, n_init=10)
         observations = self.obs_kmeans.fit_predict(weather_normalized)
+
+        return observations
+
+    def _discretize_observations_uniform(self, weather_data):
+        """
+        Discretize using uniform bins per feature, then combine into single observation index.
+        """
+        self.scaler = StandardScaler()
+        weather_normalized = self.scaler.fit_transform(weather_data)
+
+        # Use fewer bins per feature to keep observation space manageable
+        n_features = weather_normalized.shape[1]
+        bins_per_feature = max(2, int(np.power(self.n_obs, 1/min(n_features, 3))))
+
+        # Only use first 3 features (most important) to keep space small
+        n_features_used = min(3, n_features)
+        self.obs_bins = []
+
+        discretized = np.zeros((len(weather_normalized), n_features_used), dtype=int)
+        for i in range(n_features_used):
+            percentiles = np.linspace(0, 100, bins_per_feature + 1)
+            bins = np.percentile(weather_normalized[:, i], percentiles)
+            bins[0] = -np.inf
+            bins[-1] = np.inf
+            self.obs_bins.append(bins)
+            discretized[:, i] = np.digitize(weather_normalized[:, i], bins[1:-1])
+
+        # Combine into single observation index
+        observations = np.zeros(len(weather_normalized), dtype=int)
+        for i in range(n_features_used):
+            observations = observations * bins_per_feature + discretized[:, i]
+
+        # Map to range [0, n_obs)
+        observations = observations % self.n_obs
 
         return observations
 
@@ -240,7 +305,19 @@ class WTIPOMDPModel:
         Convert continuous weather features to discrete observation.
         """
         weather_normalized = self.scaler.transform(weather_features.reshape(1, -1))
-        return self.obs_kmeans.predict(weather_normalized)[0]
+
+        if self.discretization == 'uniform':
+            n_features_used = len(self.obs_bins)
+            bins_per_feature = len(self.obs_bins[0]) - 1
+
+            obs = 0
+            for i in range(n_features_used):
+                bin_idx = np.digitize(weather_normalized[0, i], self.obs_bins[i][1:-1])
+                obs = obs * bins_per_feature + bin_idx
+
+            return obs % self.n_obs
+        else:
+            return self.obs_kmeans.predict(weather_normalized)[0]
 
     def expected_reward(self, belief, action):
         """
@@ -395,13 +472,41 @@ class WTIPOMDPModel:
         }
 
 
+def resample_to_weekly(df, feature_cols, return_col='ret_CL1'):
+    """
+    Resample daily data to weekly frequency.
+
+    - Returns are compounded (sum of log returns or product of simple returns)
+    - Weather features are averaged over the week
+    """
+    df = df.copy()
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df.set_index('Date')
+
+    # Aggregate returns (sum for log-like returns)
+    weekly_returns = df[return_col].resample('W').sum()
+
+    # Average weather features
+    weekly_features = df[feature_cols].resample('W').mean()
+
+    # Combine
+    weekly_df = weekly_features.copy()
+    weekly_df[return_col] = weekly_returns
+
+    # Reset index
+    weekly_df = weekly_df.reset_index()
+    weekly_df = weekly_df.dropna()
+
+    return weekly_df
+
+
 def run_pomdp_experiment():
     """
     Run full POMDP experiment on WTI data.
     """
     # Load data with hurricanes
     print("Loading data...")
-    df = pd.read_csv("wti_1_data_with_hurricanes.csv")
+    df = pd.read_csv("pomdp_data/wti_1_data_with_hurricanes.csv")
 
     # Define feature columns (all weather + hurricane features)
     feature_cols = [
@@ -457,10 +562,185 @@ def run_pomdp_experiment():
     return pomdp, results
 
 
+def run_weekly_experiment():
+    """
+    Run POMDP experiment with weekly horizon and uniform discretization.
+    """
+    print("="*60)
+    print("WEEKLY HORIZON POMDP EXPERIMENT")
+    print("="*60)
+
+    # Load data
+    print("\nLoading data...")
+    df = pd.read_csv("pomdp_data/wti_1_data_with_hurricanes.csv")
+
+    feature_cols = [
+        c for c in df.columns if c not in ["Date", "ret_CL1", "spot_price", "CL1"]
+    ]
+    return_col = "ret_CL1"
+
+    # Resample to weekly
+    print("Resampling to weekly frequency...")
+    weekly_df = resample_to_weekly(df, feature_cols, return_col)
+    print(f"Weekly samples: {len(weekly_df)}")
+
+    # Split data
+    train_size = int(len(weekly_df) * 0.8)
+    train_df = weekly_df.iloc[:train_size].copy()
+    test_df = weekly_df.iloc[train_size:].copy()
+    print(f"Train: {len(train_df)}, Test: {len(test_df)}")
+
+    results_all = {}
+
+    # Test different configurations
+    configs = [
+        ('kmeans', 4, 8, 0.95),
+        ('uniform', 4, 8, 0.95),
+        ('uniform', 5, 10, 0.9),
+        ('uniform', 3, 6, 0.8),
+    ]
+
+    for disc, n_states, n_obs, gamma in configs:
+        print(f"\n{'='*50}")
+        print(f"Config: {disc}, states={n_states}, obs={n_obs}, gamma={gamma}")
+        print("="*50)
+
+        pomdp = WTIPOMDPModel(
+            n_hidden_states=n_states,
+            n_obs_clusters=n_obs,
+            gamma=gamma,
+            discretization=disc
+        )
+        pomdp.fit(train_df, feature_cols, return_col)
+
+        # Train Q-learning
+        print("\nTraining Q-learning...")
+        pomdp.train_qlearning(train_df, feature_cols, return_col, n_episodes=100)
+
+        # Evaluate
+        results = pomdp.evaluate(test_df, feature_cols, return_col, use_qlearning=True)
+
+        config_name = f"{disc}_s{n_states}_o{n_obs}_g{gamma}"
+        results_all[config_name] = results
+
+        print(f"\nResults: Total={results['total_reward']:.4f}, Sharpe={results['sharpe']:.4f}")
+
+    # Baselines
+    test_returns = test_df.dropna(subset=[return_col])[return_col].values[:-1]
+    buy_hold_reward = test_returns.sum()
+    buy_hold_sharpe = test_returns.mean() / (test_returns.std() + 1e-8) * np.sqrt(52)  # Weekly
+
+    np.random.seed(42)
+    random_positions = np.random.choice([-1, 0, 1], size=len(test_returns))
+    random_reward = (random_positions * test_returns).sum()
+
+    # Summary
+    print("\n" + "="*60)
+    print("SUMMARY - WEEKLY HORIZON")
+    print("="*60)
+    print(f"{'Config':<35} {'Total Reward':>15} {'Sharpe':>10}")
+    print("-"*60)
+    for name, res in results_all.items():
+        print(f"{name:<35} {res['total_reward']:>15.4f} {res['sharpe']:>10.4f}")
+    print("-"*60)
+    print(f"{'Buy & Hold':<35} {buy_hold_reward:>15.4f} {buy_hold_sharpe:>10.4f}")
+    print(f"{'Random':<35} {random_reward:>15.4f} {'N/A':>10}")
+
+    return results_all
+
+
+def run_ovx_experiment():
+    """
+    Run POMDP experiment with OVX (volatility) data on weekly horizon.
+    """
+    print("="*60)
+    print("WEEKLY POMDP WITH OVX DATA")
+    print("="*60)
+
+    # Load OVX data
+    print("\nLoading OVX data...")
+    df = pd.read_csv("ovx_data/wti_weather_hurricanes_ovx_since_2007.csv")
+    print(f"Samples: {len(df)} (from 2007)")
+
+    # Include OVX as a feature
+    feature_cols = [
+        c for c in df.columns if c not in ["Date", "ret_CL1", "spot_price", "CL1"]
+    ]
+    print(f"Features: {len(feature_cols)} (including OVX)")
+    return_col = "ret_CL1"
+
+    # Resample to weekly
+    print("Resampling to weekly frequency...")
+    weekly_df = resample_to_weekly(df, feature_cols, return_col)
+    print(f"Weekly samples: {len(weekly_df)}")
+
+    # Split data
+    train_size = int(len(weekly_df) * 0.8)
+    train_df = weekly_df.iloc[:train_size].copy()
+    test_df = weekly_df.iloc[train_size:].copy()
+    print(f"Train: {len(train_df)}, Test: {len(test_df)}")
+
+    results_all = {}
+
+    # Test configurations - based on what worked before
+    configs = [
+        ('uniform', 5, 10, 0.9),
+        ('uniform', 4, 8, 0.9),
+        ('uniform', 3, 6, 0.8),
+        ('kmeans', 4, 8, 0.9),
+    ]
+
+    for disc, n_states, n_obs, gamma in configs:
+        print(f"\n{'='*50}")
+        print(f"Config: {disc}, states={n_states}, obs={n_obs}, gamma={gamma}")
+        print("="*50)
+
+        pomdp = WTIPOMDPModel(
+            n_hidden_states=n_states,
+            n_obs_clusters=n_obs,
+            gamma=gamma,
+            discretization=disc
+        )
+        pomdp.fit(train_df, feature_cols, return_col)
+
+        # Train Q-learning with more episodes
+        print("\nTraining Q-learning...")
+        pomdp.train_qlearning(train_df, feature_cols, return_col, n_episodes=150)
+
+        # Evaluate
+        results = pomdp.evaluate(test_df, feature_cols, return_col, use_qlearning=True)
+
+        config_name = f"{disc}_s{n_states}_o{n_obs}_g{gamma}"
+        results_all[config_name] = results
+
+        print(f"\nResults: Total={results['total_reward']:.4f}, Sharpe={results['sharpe']:.4f}")
+
+    # Baselines
+    test_returns = test_df.dropna(subset=[return_col])[return_col].values[:-1]
+    buy_hold_reward = test_returns.sum()
+    buy_hold_sharpe = test_returns.mean() / (test_returns.std() + 1e-8) * np.sqrt(52)
+
+    np.random.seed(42)
+    random_positions = np.random.choice([-1, 0, 1], size=len(test_returns))
+    random_reward = (random_positions * test_returns).sum()
+
+    # Summary
+    print("\n" + "="*60)
+    print("SUMMARY - WEEKLY HORIZON WITH OVX")
+    print("="*60)
+    print(f"{'Config':<35} {'Total Reward':>15} {'Sharpe':>10}")
+    print("-"*60)
+    for name, res in results_all.items():
+        print(f"{name:<35} {res['total_reward']:>15.4f} {res['sharpe']:>10.4f}")
+    print("-"*60)
+    print(f"{'Buy & Hold':<35} {buy_hold_reward:>15.4f} {buy_hold_sharpe:>10.4f}")
+    print(f"{'Random':<35} {random_reward:>15.4f} {'N/A':>10}")
+
+    return results_all
+
+
 if __name__ == "__main__":
     import os
 
-    os.chdir(
-        "/Users/ethanhersch/Documents/Documents/Stanford/CS238/FinalProject/CS238_Project/src"
-    )
-    pomdp, results = run_pomdp_experiment()
+    os.chdir('/Users/andrewsung/Developer/CS238_Project/src')
+    results = run_ovx_experiment()
