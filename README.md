@@ -1,25 +1,66 @@
-# CS238_Project
+# Oil Futures Trading with Weather Data  
+**CS238: Decision Making Under Uncertainty — Stanford University**  
+**Authors:** Andrew Sung · Ethan Hersch · Jerry Yin  
 
-See CS238_oil_exploration.ipynb for the code to retrieve 2m temp and daily total precipitation from the ERA5 daily aggregate dataset
+This repository contains the code, data pipeline, and reinforcement learning models for our CS238 project on **trading WTI crude oil futures using weather, volatility, and price data**. We evaluate both **POMDP-based belief-state Q-learning** and **Deep Q-Network (DQN)** methods, and study how decision frequency (daily vs weekly vs monthly) affects strategy performance in this highly noisy commodity market.
 
-Inside the data folder, there are two directories
-- data/weather_data/incoming_pipeline includes data from 01-01-1986 to 11-01-2025 along the major pipelines
-- data/weather_data/producing_locations includes data from the same time period in major oil producing regions
+📄 **Project Paper:** *Oil Futures Trading with Weather Data: an Evaluation of POMDP and Deep Q-Learning Approaches*  
 
-These are all major pipelines and major oil-producing regions for WTI crude oil. This is what the WTI (Cushing, OK) spot price is based on.
 
-Inside data/oil_data is the information for oil spot prices and futures prices (WTI Cushing OK)
-- Cushing_OK_WTI_Spot_Price_FOB_sorted.csv contains the spot prices of Cushing OK crude (daily) sorted from 1986 to 2024.
-- NYMEX_futures contains the futures prices for the 1,2,3,4 month futures. They are also sorted like the spot prices.
+## Overview
 
-Note, the 1 and 3 month options start 1983 and the 2 and 4 month options start 01-02-1985
-- All go until 2024-04-05
+Crude oil prices are influenced by global supply/demand conditions, transportation constraints, and weather-driven disruptions (pipeline freezing, hurricanes, etc.).  
+We investigate whether **weather (ERA5), OVX volatility, and futures structure** provide useful signals for sequential decision-making agents.
 
--- 
+We compare three approaches:
 
-Data processing:
-- We have weather data over a long period, including trading and non-trading days
-- We made all future and spot price dataframes span the same time period and filtered out weather data for those days
-- This lives within the data/processed_data directory
+- **POMDP with belief-state Q-learning**  
+- **Deep Q-Network (DQN)** with 58-dimensional feature inputs  
+- **Baselines:** Buy-and-Hold, 10-year WTI long-only Sharpe
 
-Question and further decision the processed datasets only have weather data on trading days. It could be worth incorporating non-trading day weather though.
+Our key finding:
+
+> **Daily trading is dominated by noise and models underperform.  
+> Weekly/monthly horizons yield strong Sharpe ratios, showing weather effects operate on slower timescales.**
+
+---
+
+## Data Structure
+
+### Weather Data (`data/weather_data/`)
+- `incoming_pipeline/` — Temperature & precipitation along major pipeline corridors (1986–2025)  
+- `producing_locations/` — Same coverage for major oil-producing regions  
+
+These regions correspond to production and transportation corridors relevant for WTI (Cushing, OK).
+
+### Oil & Volatility Data (`data/oil_data/`)
+- `Cushing_OK_WTI_Spot_Price_FOB_sorted.csv` — WTI spot price (1986–2024)  
+- `NYMEX_futures/` — CL1–CL4 front-month futures (start years 1983–1985)  
+- OVX volatility index — Available starting May 2007  
+
+Processed merged datasets live in `data/processed_data/`.
+
+**Note:** Weather is currently filtered to *trading days only*; including non-trading days is a potential extension.
+
+---
+
+## Model Performance
+
+Daily models evaluated 2016–2024; weekly/monthly models evaluated 2021–2024.
+
+| Strategy                     | Horizon              | Total Return (%) | Sharpe Ratio |
+|-----------------------------|----------------------|------------------|--------------|
+| DQN Agent                   | Daily                | 44.9             | 0.128        |
+| POMDP (K-means)             | Daily                | 31.2             | 0.089        |
+| Buy & Hold                  | Daily                | 137.3            | 0.386        |
+| **POMDP + OVX (Uniform)**   | **Weekly**           | **32**           | **1.343**    |
+| Buy & Hold                  | Weekly               | 70.6             | 0.561        |
+| **POMDP + OVX (Uniform)**   | **Monthly**          | **43.2**         | **2.231**    |
+| POMDP + OVX (K-means)       | Monthly              | 5.4              | 0.370        |
+| Buy & Hold                  | Monthly              | 63.1             | 0.608        |
+| General WTI Baseline        | 10-year Performance  | 39               | 0.08         |
+
+### Key Takeaways
+- Daily trading = **too noisy** to extract meaningful weather signal.  
+- Weekly & monthly horizons = **4–10× higher Sharpe ratio** than buy-and-hold.  
+- OVX significantly improves regime inference.  
