@@ -64,3 +64,17 @@ Daily models evaluated 2016–2024; weekly/monthly models evaluated 2021–2024.
 - Daily trading = **too noisy** to extract meaningful weather signal.  
 - Weekly & monthly horizons = **4–10× higher Sharpe ratio** than buy-and-hold.  
 - OVX significantly improves regime inference.  
+
+---
+
+### File Organization
+```CS238_oil_exploration.ipynb``` contains code from a Colab notebook used to gather weather data from Google Earth Engine.
+
+```\src``` contains the POMDP and DQN models.
+- ```\src\pomdp_data``` contains the merged datasets for all CL1-CL4 contracts with and without weather data, using simple and log returns. These are the csv files used for evaluation of the POMDP model.
+- ```\src\ovx_data``` contains the similar data to ```\src\pomdp_data``` but with the addition of OVX information and this is the data used for the performant POMDP model.
+
+```\data``` contains folders with the data we collected. 
+- ```\data\processed_data``` is the processed weather weather data for hurricanes, producing, and transportation regions.
+- ```data\oil_data``` contains the CL1-CL4 and oil spot price datasets.
+- ```data\ovx_data.csv``` is the volatility data since 2007.
