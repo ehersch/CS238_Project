@@ -500,6 +500,31 @@ def resample_to_weekly(df, feature_cols, return_col='ret_CL1'):
     return weekly_df
 
 
+def resample_to_monthly(df, feature_cols, return_col='ret_CL1'):
+    """
+    Resample daily data to monthly frequency.
+    """
+    df = df.copy()
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df.set_index('Date')
+
+    # Aggregate returns (sum for log-like returns)
+    monthly_returns = df[return_col].resample('M').sum()
+
+    # Average weather features
+    monthly_features = df[feature_cols].resample('M').mean()
+
+    # Combine
+    monthly_df = monthly_features.copy()
+    monthly_df[return_col] = monthly_returns
+
+    # Reset index
+    monthly_df = monthly_df.reset_index()
+    monthly_df = monthly_df.dropna()
+
+    return monthly_df
+
+
 def run_pomdp_experiment():
     """
     Run full POMDP experiment on WTI data.
@@ -739,8 +764,252 @@ def run_ovx_experiment():
     return results_all
 
 
+def run_monthly_experiment():
+    """
+    Run POMDP experiment with monthly horizon and OVX data.
+    """
+    print("="*60)
+    print("MONTHLY POMDP WITH OVX DATA")
+    print("="*60)
+
+    # Load OVX data
+    print("\nLoading OVX data...")
+    df = pd.read_csv("ovx_data/wti_weather_hurricanes_ovx_since_2007.csv")
+    print(f"Daily samples: {len(df)}")
+
+    feature_cols = [
+        c for c in df.columns if c not in ["Date", "ret_CL1", "spot_price", "CL1"]
+    ]
+    return_col = "ret_CL1"
+
+    # Resample to monthly
+    print("Resampling to monthly frequency...")
+    monthly_df = resample_to_monthly(df, feature_cols, return_col)
+    print(f"Monthly samples: {len(monthly_df)}")
+
+    # Split data (90/10 for more out-of-sample testing)
+    train_size = int(len(monthly_df) * 0.9)
+    train_df = monthly_df.iloc[:train_size].copy()
+    test_df = monthly_df.iloc[train_size:].copy()
+    print(f"Train: {len(train_df)}, Test: {len(test_df)}")
+
+    results_all = {}
+
+    # Test configurations
+    configs = [
+        ('uniform', 3, 6, 0.8),
+        ('uniform', 4, 8, 0.9),
+        ('uniform', 3, 4, 0.7),
+        ('kmeans', 3, 6, 0.8),
+    ]
+
+    for disc, n_states, n_obs, gamma in configs:
+        print(f"\n{'='*50}")
+        print(f"Config: {disc}, states={n_states}, obs={n_obs}, gamma={gamma}")
+        print("="*50)
+
+        pomdp = WTIPOMDPModel(
+            n_hidden_states=n_states,
+            n_obs_clusters=n_obs,
+            gamma=gamma,
+            discretization=disc
+        )
+        pomdp.fit(train_df, feature_cols, return_col)
+
+        # Train Q-learning with more episodes (smaller dataset)
+        print("\nTraining Q-learning...")
+        pomdp.train_qlearning(train_df, feature_cols, return_col, n_episodes=200)
+
+        # Evaluate
+        results = pomdp.evaluate(test_df, feature_cols, return_col, use_qlearning=True)
+
+        config_name = f"{disc}_s{n_states}_o{n_obs}_g{gamma}"
+        results_all[config_name] = results
+
+        print(f"\nResults: Total={results['total_reward']:.4f}, Sharpe={results['sharpe']:.4f}")
+
+    # Baselines
+    test_returns = test_df.dropna(subset=[return_col])[return_col].values[:-1]
+    buy_hold_reward = test_returns.sum()
+    buy_hold_sharpe = test_returns.mean() / (test_returns.std() + 1e-8) * np.sqrt(12)  # Monthly
+
+    np.random.seed(42)
+    random_positions = np.random.choice([-1, 0, 1], size=len(test_returns))
+    random_reward = (random_positions * test_returns).sum()
+
+    # Summary
+    print("\n" + "="*60)
+    print("SUMMARY - MONTHLY HORIZON WITH OVX")
+    print("="*60)
+    print(f"{'Config':<35} {'Total Reward':>15} {'Sharpe':>10}")
+    print("-"*60)
+    for name, res in results_all.items():
+        print(f"{name:<35} {res['total_reward']:>15.4f} {res['sharpe']:>10.4f}")
+    print("-"*60)
+    print(f"{'Buy & Hold':<35} {buy_hold_reward:>15.4f} {buy_hold_sharpe:>10.4f}")
+    print(f"{'Random':<35} {random_reward:>15.4f} {'N/A':>10}")
+
+    return results_all
+
+
+def run_gamma_comparison_monthly(gammas=None, n_runs=3):
+    """
+    Run POMDP experiment comparing different gamma values on monthly horizon.
+
+    Args:
+        gammas: List of gamma values to test. Default: [0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+        n_runs: Number of runs per gamma to get mean/std (default 3)
+
+    Returns:
+        Dictionary with results for each gamma value
+    """
+    import matplotlib.pyplot as plt
+
+    if gammas is None:
+        gammas = [0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+
+    print("="*60)
+    print("GAMMA COMPARISON - MONTHLY POMDP")
+    print("="*60)
+
+    # Load OVX data
+    print("\nLoading OVX data...")
+    df = pd.read_csv("ovx_data/wti_weather_hurricanes_ovx_since_2007.csv")
+    print(f"Daily samples: {len(df)}")
+
+    feature_cols = [
+        c for c in df.columns if c not in ["Date", "ret_CL1", "spot_price", "CL1"]
+    ]
+    return_col = "ret_CL1"
+
+    # Resample to monthly
+    print("Resampling to monthly frequency...")
+    monthly_df = resample_to_monthly(df, feature_cols, return_col)
+    print(f"Monthly samples: {len(monthly_df)}")
+
+    # Split data (90/10)
+    train_size = int(len(monthly_df) * 0.9)
+    train_df = monthly_df.iloc[:train_size].copy()
+    test_df = monthly_df.iloc[train_size:].copy()
+    print(f"Train: {len(train_df)}, Test: {len(test_df)}")
+
+    # Fixed hyperparameters (use best from previous experiments)
+    n_states = 3
+    n_obs = 6
+    disc = 'uniform'
+
+    results_all = {}
+
+    for gamma in gammas:
+        print(f"\n{'='*50}")
+        print(f"Testing gamma = {gamma}")
+        print("="*50)
+
+        run_rewards = []
+        run_sharpes = []
+
+        for run in range(n_runs):
+            print(f"  Run {run+1}/{n_runs}...")
+
+            pomdp = WTIPOMDPModel(
+                n_hidden_states=n_states,
+                n_obs_clusters=n_obs,
+                gamma=gamma,
+                discretization=disc
+            )
+            pomdp.fit(train_df, feature_cols, return_col)
+
+            # Train Q-learning
+            pomdp.train_qlearning(
+                train_df, feature_cols, return_col,
+                n_episodes=200,
+                alpha=0.1,
+                epsilon_start=1.0,
+                epsilon_end=0.1
+            )
+
+            # Evaluate
+            results = pomdp.evaluate(test_df, feature_cols, return_col, use_qlearning=True)
+            run_rewards.append(results['total_reward'])
+            run_sharpes.append(results['sharpe'])
+
+        results_all[gamma] = {
+            'mean_reward': np.mean(run_rewards),
+            'std_reward': np.std(run_rewards),
+            'mean_sharpe': np.mean(run_sharpes),
+            'std_sharpe': np.std(run_sharpes),
+            'all_rewards': run_rewards,
+            'all_sharpes': run_sharpes
+        }
+
+        print(f"  Reward: {np.mean(run_rewards):.4f} ± {np.std(run_rewards):.4f}")
+        print(f"  Sharpe: {np.mean(run_sharpes):.4f} ± {np.std(run_sharpes):.4f}")
+
+    # Calculate baseline
+    test_returns = test_df.dropna(subset=[return_col])[return_col].values[:-1]
+    buy_hold_reward = test_returns.sum()
+    buy_hold_sharpe = test_returns.mean() / (test_returns.std() + 1e-8) * np.sqrt(12)
+
+    # Print summary table
+    print("\n" + "="*70)
+    print("SUMMARY - GAMMA COMPARISON (MONTHLY)")
+    print("="*70)
+    print(f"{'Gamma':<10} {'Mean Reward':>15} {'Std Reward':>12} {'Mean Sharpe':>12} {'Std Sharpe':>12}")
+    print("-"*70)
+    for gamma in gammas:
+        r = results_all[gamma]
+        print(f"{gamma:<10} {r['mean_reward']:>15.4f} {r['std_reward']:>12.4f} {r['mean_sharpe']:>12.4f} {r['std_sharpe']:>12.4f}")
+    print("-"*70)
+    print(f"{'Buy & Hold':<10} {buy_hold_reward:>15.4f} {'N/A':>12} {buy_hold_sharpe:>12.4f} {'N/A':>12}")
+
+    # Find best gamma
+    best_gamma_sharpe = max(gammas, key=lambda g: results_all[g]['mean_sharpe'])
+    best_gamma_reward = max(gammas, key=lambda g: results_all[g]['mean_reward'])
+    print(f"\nBest gamma by Sharpe: {best_gamma_sharpe}")
+    print(f"Best gamma by Reward: {best_gamma_reward}")
+
+    # Create visualization
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # Plot 1: Sharpe Ratio vs Gamma
+    ax1 = axes[0]
+    mean_sharpes = [results_all[g]['mean_sharpe'] for g in gammas]
+    std_sharpes = [results_all[g]['std_sharpe'] for g in gammas]
+    ax1.errorbar(gammas, mean_sharpes, yerr=std_sharpes, marker='o', capsize=5,
+                 linewidth=2, markersize=8, color='blue')
+    ax1.set_xlabel('Gamma (Discount Factor)', fontsize=12)
+    ax1.set_ylabel('Sharpe Ratio', fontsize=12)
+    ax1.set_title('Sharpe Ratio vs Gamma (Monthly)', fontsize=14)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_xticks(gammas)
+
+    # Plot 2: Total Reward vs Gamma
+    ax2 = axes[1]
+    mean_rewards = [results_all[g]['mean_reward'] for g in gammas]
+    std_rewards = [results_all[g]['std_reward'] for g in gammas]
+    ax2.errorbar(gammas, mean_rewards, yerr=std_rewards, marker='s', capsize=5,
+                 linewidth=2, markersize=8, color='green')
+    ax2.set_xlabel('Gamma (Discount Factor)', fontsize=12)
+    ax2.set_ylabel('Total Return', fontsize=12)
+    ax2.set_title('Total Return vs Gamma (Monthly)', fontsize=14)
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xticks(gammas)
+
+    plt.tight_layout()
+    plt.savefig('../paper/gamma_comparison_monthly.png', dpi=150, bbox_inches='tight')
+    plt.savefig('../paper/gamma_comparison_monthly.pdf', bbox_inches='tight')
+    print(f"\nFigure saved to: paper/gamma_comparison_monthly.png")
+    plt.show()
+
+    return results_all, buy_hold_sharpe, buy_hold_reward
+
+
 if __name__ == "__main__":
     import os
 
     os.chdir('/Users/andrewsung/Developer/CS238_Project/src')
-    results = run_ovx_experiment()
+    # Run gamma comparison experiment
+    results, bh_sharpe, bh_reward = run_gamma_comparison_monthly(
+        gammas=[0.7, 0.75, 0.8, 0.85, 0.9, 0.95],
+        n_runs=3
+    )
